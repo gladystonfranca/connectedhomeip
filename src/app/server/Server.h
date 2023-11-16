@@ -68,13 +68,12 @@
 #include <transport/raw/UDP.h>
 
 #if CHIP_CONFIG_ENABLE_ICD_SERVER
-#include <app/icd/ICDEventManager.h> // nogncheck
-#include <app/icd/ICDManager.h>      // nogncheck
+#include <app/icd/ICDManager.h> // nogncheck
 #endif
 
 namespace chip {
 
-constexpr size_t kMaxBlePendingPackets = 1;
+inline constexpr size_t kMaxBlePendingPackets = 1;
 
 //
 // NOTE: Please do not alter the order of template specialization here as the logic
@@ -96,7 +95,7 @@ struct ServerInitParams
     ServerInitParams() = default;
 
     // Not copyable
-    ServerInitParams(const ServerInitParams &) = delete;
+    ServerInitParams(const ServerInitParams &)             = delete;
     ServerInitParams & operator=(const ServerInitParams &) = delete;
 
     // Application delegate to handle some commissioning lifecycle events
@@ -178,7 +177,7 @@ struct CommonCaseDeviceServerInitParams : public ServerInitParams
     CommonCaseDeviceServerInitParams() = default;
 
     // Not copyable
-    CommonCaseDeviceServerInitParams(const CommonCaseDeviceServerInitParams &) = delete;
+    CommonCaseDeviceServerInitParams(const CommonCaseDeviceServerInitParams &)             = delete;
     CommonCaseDeviceServerInitParams & operator=(const CommonCaseDeviceServerInitParams &) = delete;
 
     /**
@@ -349,6 +348,10 @@ public:
     app::DefaultAttributePersistenceProvider & GetDefaultAttributePersister() { return mAttributePersister; }
 
     app::reporting::ReportScheduler * GetReportScheduler() { return mReportScheduler; }
+
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+    app::ICDManager & GetICDManager() { return mICDManager; }
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 
     /**
      * This function causes the ShutDown event to be generated async on the
@@ -542,9 +545,9 @@ private:
             case Credentials::CertificateValidityResult::kExpired:
             case Credentials::CertificateValidityResult::kExpiredAtLastKnownGoodTime:
             case Credentials::CertificateValidityResult::kTimeUnknown: {
-                uint8_t certType;
+                Credentials::CertType certType;
                 ReturnErrorOnFailure(cert->mSubjectDN.GetCertType(certType));
-                if (certType == Credentials::kCertType_Root)
+                if (certType == Credentials::CertType::kRoot)
                 {
                     return CHIP_NO_ERROR;
                 }
@@ -619,7 +622,6 @@ private:
 
     System::Clock::Microseconds64 mInitTimestamp;
 #if CHIP_CONFIG_ENABLE_ICD_SERVER
-    app::ICDEventManager mICDEventManager;
     app::ICDManager mICDManager;
 #endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 };

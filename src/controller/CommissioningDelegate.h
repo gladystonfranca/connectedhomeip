@@ -35,7 +35,7 @@ enum CommissioningStage : uint8_t
     kError,
     kSecurePairing,              ///< Establish a PASE session with the device
     kReadCommissioningInfo,      ///< Query General Commissioning Attributes, Network Features and Time Synchronization Cluster
-    kCheckForMatchingFabric,     ///< Read the current fabrics on the commissionee
+    kReadCommissioningInfo2,     ///< Query ICD state, check for matching fabric
     kArmFailsafe,                ///< Send ArmFailSafe (0x30:0) command to the device
     kConfigRegulatory,           ///< Send SetRegulatoryConfig (0x30:2) command to the device
     kConfigureUTCTime,           ///< SetUTCTime if the DUT has a time cluster
@@ -71,6 +71,13 @@ enum CommissioningStage : uint8_t
     kNeedsNetworkCreds,
 };
 
+enum ICDRegistrationStrategy : uint8_t
+{
+    kIgnore,         ///< Do not check whether the device is an ICD during commissioning
+    kBeforeComplete, ///< Do commissioner self-registration or external controller registration,
+                     ///< Controller should provide a ICDKey manager for generating symmetric key
+};
+
 const char * StageToString(CommissioningStage stage);
 
 struct WiFiCredentials
@@ -96,11 +103,11 @@ struct CompletionStatus
     Optional<app::Clusters::NetworkCommissioning::NetworkCommissioningStatusEnum> networkCommissioningStatus;
 };
 
-constexpr uint16_t kDefaultFailsafeTimeout = 60;
+inline constexpr uint16_t kDefaultFailsafeTimeout = 60;
 
 // Per spec, all commands that are sent with the failsafe armed need at least
 // a 30s timeout.
-constexpr System::Clock::Timeout kMinimumCommissioningStepTimeout = System::Clock::Seconds16(30);
+inline constexpr System::Clock::Timeout kMinimumCommissioningStepTimeout = System::Clock::Seconds16(30);
 
 class CommissioningParameters
 {
@@ -493,6 +500,13 @@ public:
         return *this;
     }
 
+    ICDRegistrationStrategy GetICDRegistrationStrategy() const { return mICDRegistrationStrategy; }
+    CommissioningParameters & SetICDRegistrationStrategy(ICDRegistrationStrategy icdRegistrationStrategy)
+    {
+        mICDRegistrationStrategy = icdRegistrationStrategy;
+        return *this;
+    }
+
     // Clear all members that depend on some sort of external buffer.  Can be
     // used to make sure that we are not holding any dangling pointers.
     void ClearExternalBufferDependentValues()
@@ -511,6 +525,8 @@ public:
         mAttestationSignature.ClearValue();
         mPAI.ClearValue();
         mDAC.ClearValue();
+        mTimeZone.ClearValue();
+        mDSTOffsets.ClearValue();
     }
 
 private:
@@ -550,7 +566,8 @@ private:
     Optional<bool> mAttemptWiFiNetworkScan;
     Optional<bool> mAttemptThreadNetworkScan; // This automatically gets set to false when a ThreadOperationalDataset is set
     Optional<bool> mSkipCommissioningComplete;
-    bool mCheckForMatchingFabric = false;
+    ICDRegistrationStrategy mICDRegistrationStrategy = ICDRegistrationStrategy::kIgnore;
+    bool mCheckForMatchingFabric                     = false;
 };
 
 struct RequestedCertificate
@@ -632,9 +649,12 @@ struct ReadCommissioningInfo
     uint8_t maxTimeZoneSize        = 1;
     uint8_t maxDSTSize             = 1;
 };
-struct MatchingFabricInfo
+
+struct ReadCommissioningInfo2
 {
-    NodeId nodeId = kUndefinedNodeId;
+    NodeId nodeId               = kUndefinedNodeId;
+    bool isIcd                  = false;
+    bool checkInProtocolSupport = false;
 };
 
 struct TimeZoneResponseInfo
@@ -668,7 +688,7 @@ public:
     virtual ~CommissioningDelegate(){};
     /* CommissioningReport is returned after each commissioning step is completed. The reports for each step are:
      * kReadCommissioningInfo - ReadCommissioningInfo
-     * kCheckForMatchingFabric = MatchingFabricInfo
+     * kReadCommissioningInfo2: ReadCommissioningInfo2
      * kArmFailsafe: CommissioningErrorInfo if there is an error
      * kConfigRegulatory: CommissioningErrorInfo if there is an error
      * kConfigureUTCTime: None
@@ -693,8 +713,8 @@ public:
      * kCleanup: none
      */
     struct CommissioningReport : Variant<RequestedCertificate, AttestationResponse, CSRResponse, NocChain, OperationalNodeFoundData,
-                                         ReadCommissioningInfo, AttestationErrorInfo, CommissioningErrorInfo,
-                                         NetworkCommissioningStatusInfo, MatchingFabricInfo, TimeZoneResponseInfo>
+                                         ReadCommissioningInfo, ReadCommissioningInfo2, AttestationErrorInfo,
+                                         CommissioningErrorInfo, NetworkCommissioningStatusInfo, TimeZoneResponseInfo>
     {
         CommissioningReport() : stageCompleted(CommissioningStage::kError) {}
         CommissioningStage stageCompleted;

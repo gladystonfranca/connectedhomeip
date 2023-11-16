@@ -30,9 +30,9 @@ namespace core {
  */
 enum CastingAppState
 {
-    UNINITIALIZED, // Before Initialize() success
-    NOT_RUNNING,   // After Initialize() success before Start()ing, OR After stop() success
-    RUNNING,       // After Start() success
+    CASTING_APP_UNINITIALIZED, // Before Initialize() success
+    CASTING_APP_NOT_RUNNING,   // After Initialize() success before Start()ing, OR After stop() success
+    CASTING_APP_RUNNING,       // After Start() success
 };
 
 /**
@@ -53,19 +53,12 @@ public:
     CHIP_ERROR Initialize(const matter::casting::support::AppParameters & appParameters);
 
     /**
-     * @brief Starts the Matter server that the CastingApp runs on and calls PostStartRegistrations() to finish starting up the
+     * @brief Starts the Matter server that the CastingApp runs on and registers all the necessary delegates
      * CastingApp.
      *
      * @return CHIP_ERROR - CHIP_NO_ERROR if Matter server started successfully, specific error code otherwise.
      */
     CHIP_ERROR Start();
-
-    /**
-     * @brief Perform post Matter server startup registrations
-     *
-     * @return CHIP_ERROR  - CHIP_NO_ERROR if all registrations succeeded, specific error code otherwise
-     */
-    CHIP_ERROR PostStartRegistrations();
 
     /**
      * @brief Stops the Matter server that the CastingApp runs on
@@ -74,16 +67,28 @@ public:
      */
     CHIP_ERROR Stop();
 
+    /**
+     * @return true, if CastingApp is in CASTING_APP_RUNNING state. false otherwise
+     */
+    bool isRunning() { return mState == CASTING_APP_RUNNING; }
+
 private:
     CastingApp();
     static CastingApp * _castingApp;
 
-    CastingApp(CastingApp & other) = delete;
+    CastingApp(CastingApp & other)     = delete;
     void operator=(const CastingApp &) = delete;
+
+    /**
+     * @brief Perform post Matter server startup registrations
+     *
+     * @return CHIP_ERROR  - CHIP_NO_ERROR if all registrations succeeded, specific error code otherwise
+     */
+    CHIP_ERROR PostStartRegistrations();
 
     const matter::casting::support::AppParameters * mAppParameters;
 
-    CastingAppState mState = UNINITIALIZED;
+    CastingAppState mState = CASTING_APP_UNINITIALIZED;
 };
 
 }; // namespace core

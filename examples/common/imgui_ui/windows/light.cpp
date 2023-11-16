@@ -89,8 +89,8 @@ void Light::UpdateState()
         LevelControl::Commands::MoveToLevel::DecodableType data;
 
         data.level = mTargetLevel.Value();
-        data.optionsMask.Set(LevelControl::LevelControlOptions::kExecuteIfOff);
-        data.optionsOverride.Set(LevelControl::LevelControlOptions::kExecuteIfOff);
+        data.optionsMask.Set(LevelControl::OptionsBitmap::kExecuteIfOff);
+        data.optionsOverride.Set(LevelControl::OptionsBitmap::kExecuteIfOff);
 
         (void) LevelControlServer::MoveToLevel(mEndpointId, data);
 
@@ -155,11 +155,10 @@ void Light::Render()
     ImGui::Text("Color Control:");
     ImGui::Indent();
     const char * mode = // based on ColorMode attribute: spec 3.2.7.9
-        (mColorMode == EMBER_ZCL_COLOR_MODE_CURRENT_HUE_AND_CURRENT_SATURATION)
-        ? "Hue/Saturation"
-        : (mColorMode == EMBER_ZCL_COLOR_MODE_CURRENT_X_AND_CURRENT_Y)
-            ? "X/Y"
-            : (mColorMode == EMBER_ZCL_COLOR_MODE_COLOR_TEMPERATURE) ? "Temperature/Mireds" : "UNKNOWN";
+        (mColorMode == EMBER_ZCL_COLOR_MODE_CURRENT_HUE_AND_CURRENT_SATURATION) ? "Hue/Saturation"
+        : (mColorMode == EMBER_ZCL_COLOR_MODE_CURRENT_X_AND_CURRENT_Y)          ? "X/Y"
+        : (mColorMode == EMBER_ZCL_COLOR_MODE_COLOR_TEMPERATURE)                ? "Temperature/Mireds"
+                                                                                : "UNKNOWN";
 
     ImGui::Text("Mode: %s", mode);
 

@@ -32,6 +32,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <app/icd/ICDNotifier.h>
 #include <lib/core/CHIPCore.h>
 #include <lib/core/CHIPEncoding.h>
 #include <lib/core/CHIPKeyIds.h>
@@ -45,10 +46,6 @@
 #include <platform/LockTracker.h>
 #include <protocols/Protocols.h>
 #include <protocols/secure_channel/Constants.h>
-
-#if CONFIG_DEVICE_LAYER
-#include <platform/CHIPDeviceLayer.h>
-#endif
 
 using namespace chip::Encoding;
 using namespace chip::Inet;
@@ -79,6 +76,7 @@ bool ExchangeContext::IsResponseExpected() const
 void ExchangeContext::SetResponseExpected(bool inResponseExpected)
 {
     mFlags.Set(Flags::kFlagResponseExpected, inResponseExpected);
+    SetWaitingForResponseOrAck(inResponseExpected);
 }
 
 void ExchangeContext::UseSuggestedResponseTimeout(Timeout applicationProcessingTimeout)
@@ -90,45 +88,6 @@ void ExchangeContext::SetResponseTimeout(Timeout timeout)
 {
     mResponseTimeout = timeout;
 }
-
-#if CONFIG_DEVICE_LAYER && CHIP_DEVICE_CONFIG_ENABLE_SED
-void ExchangeContext::UpdateSEDIntervalMode()
-{
-    if (!HasSessionHandle())
-    {
-        // After the session has been deleted, no further communication can occur on the exchange,
-        // so withdraw a SED active mode request.
-        UpdateSEDIntervalMode(false);
-        return;
-    }
-
-    Transport::PeerAddress address;
-
-    switch (GetSessionHandle()->GetSessionType())
-    {
-    case Transport::Session::SessionType::kSecure:
-        address = GetSessionHandle()->AsSecureSession()->GetPeerAddress();
-        break;
-    case Transport::Session::SessionType::kUnauthenticated:
-        address = GetSessionHandle()->AsUnauthenticatedSession()->GetPeerAddress();
-        break;
-    default:
-        return;
-    }
-
-    VerifyOrReturn(address.GetTransportType() != Transport::Type::kBle);
-    UpdateSEDIntervalMode(IsResponseExpected() || IsSendExpected() || IsMessageNotAcked());
-}
-
-void ExchangeContext::UpdateSEDIntervalMode(bool activeMode)
-{
-    if (activeMode != IsRequestingActiveMode())
-    {
-        SetRequestingActiveMode(activeMode);
-        DeviceLayer::ConnectivityMgr().RequestSEDActiveMode(activeMode, true);
-    }
-}
-#endif
 
 CHIP_ERROR ExchangeContext::SendMessage(Protocols::Id protocolId, uint8_t msgType, PacketBufferHandle && msgBuf,
                                         const SendFlags & sendFlags)
@@ -156,7 +115,7 @@ CHIP_ERROR ExchangeContext::SendMessage(Protocols::Id protocolId, uint8_t msgTyp
     bool reliableTransmissionRequested =
         GetSessionHandle()->RequireMRP() && !sendFlags.Has(SendMessageFlags::kNoAutoRequestAck) && !IsGroupExchangeContext();
 
-    bool startedResponseTimer = false;
+    bool currentMessageExpectResponse = false;
     // If a response message is expected...
     if (sendFlags.Has(SendMessageFlags::kExpectResponse) && !IsGroupExchangeContext())
     {
@@ -178,7 +137,7 @@ CHIP_ERROR ExchangeContext::SendMessage(Protocols::Id protocolId, uint8_t msgTyp
                 SetResponseExpected(false);
                 return err;
             }
-            startedResponseTimer = true;
+            currentMessageExpectResponse = true;
         }
     }
 
@@ -222,9 +181,9 @@ CHIP_ERROR ExchangeContext::SendMessage(Protocols::Id protocolId, uint8_t msgTyp
 #endif
         if (err != CHIP_NO_ERROR)
         {
-            // We should only cancel the response timer if the ExchangeContext fails to send the message that starts the response
-            // timer.
-            if (startedResponseTimer)
+            // We should only cancel the response timer if the ExchangeContext fails to send the message that expects a
+            // response.
+            if (currentMessageExpectResponse)
             {
                 CancelResponseTimer();
                 SetResponseExpected(false);
@@ -240,16 +199,9 @@ CHIP_ERROR ExchangeContext::SendMessage(Protocols::Id protocolId, uint8_t msgTyp
         }
         else
         {
-#if CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
-            DeviceLayer::ChipDeviceEvent event;
-            event.Type                       = DeviceLayer::DeviceEventType::kChipMsgSentEvent;
-            event.MessageSent.ExpectResponse = IsResponseExpected();
-            CHIP_ERROR status                = DeviceLayer::PlatformMgr().PostEvent(&event);
-            if (status != CHIP_NO_ERROR)
-            {
-                ChipLogError(DeviceLayer, "Failed to post Message sent event %" CHIP_ERROR_FORMAT, status.Format());
-            }
-#endif // CONFIG_DEVICE_LAYER
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+            app::ICDNotifier::GetInstance().BroadcastNetworkActivityNotification();
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 
             // Standalone acks are not application-level message sends.
             if (!isStandaloneAck)
@@ -299,18 +251,6 @@ void ExchangeContext::DoClose(bool clearRetransTable)
     {
         // Cancel the response timer.
         CancelResponseTimer();
-#if CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
-        DeviceLayer::ChipDeviceEvent event;
-        event.Type                                  = DeviceLayer::DeviceEventType::kChipMsgRxEventHandled;
-        event.RxEventContext.wasReceived            = false;
-        event.RxEventContext.clearsExpectedResponse = true;
-        CHIP_ERROR status                           = DeviceLayer::PlatformMgr().PostEvent(&event);
-        if (status != CHIP_NO_ERROR)
-        {
-            ChipLogError(DeviceLayer, "Failed to post Msg Handled event at ExchangeContext closure %" CHIP_ERROR_FORMAT,
-                         status.Format());
-        }
-#endif // CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
     }
 }
 
@@ -385,6 +325,10 @@ ExchangeContext::ExchangeContext(ExchangeManager * em, uint16_t ExchangeId, cons
     // Do not request Ack for multicast
     SetAutoRequestAck(!session->IsGroupSession());
 
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+    app::ICDNotifier::GetInstance().BroadcastActiveRequestNotification(app::ICDListener::KeepActiveFlags::kExchangeContextOpen);
+#endif
+
 #if defined(CHIP_EXCHANGE_CONTEXT_DETAIL_LOGGING)
     ChipLogDetail(ExchangeManager, "ec++ id: " ChipLogFormatExchange, ChipLogValueExchange(this));
 #endif
@@ -400,10 +344,9 @@ ExchangeContext::~ExchangeContext()
     //
     VerifyOrDie(mFlags.Has(Flags::kFlagClosed));
 
-#if CONFIG_DEVICE_LAYER && CHIP_DEVICE_CONFIG_ENABLE_SED
-    // Make sure that the exchange withdraws the request for Sleepy End Device active mode.
-    UpdateSEDIntervalMode(false);
-#endif
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+    app::ICDNotifier::GetInstance().BroadcastActiveRequestWithdrawal(app::ICDListener::KeepActiveFlags::kExchangeContextOpen);
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 
     // Ideally, in this scenario, the retransmit table should
     // be clear of any outstanding messages for this context and
@@ -521,17 +464,8 @@ void ExchangeContext::HandleResponseTimeout(System::Layer * aSystemLayer, void *
 
 void ExchangeContext::NotifyResponseTimeout(bool aCloseIfNeeded)
 {
-#if CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
-    DeviceLayer::ChipDeviceEvent event;
-    event.Type                                  = DeviceLayer::DeviceEventType::kChipMsgRxEventHandled;
-    event.RxEventContext.wasReceived            = false;
-    event.RxEventContext.clearsExpectedResponse = true;
-    CHIP_ERROR status                           = DeviceLayer::PlatformMgr().PostEvent(&event);
-    if (status != CHIP_NO_ERROR)
-    {
-        ChipLogError(DeviceLayer, "Failed to post Message Response Timeout event %" CHIP_ERROR_FORMAT, status.Format());
-    }
-#endif // CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
+    // Grab the value of WaitingForResponseOrAck() before we mess with our state.
+    bool gotMRPAck = !WaitingForResponseOrAck();
 
     SetResponseExpected(false);
 
@@ -544,11 +478,17 @@ void ExchangeContext::NotifyResponseTimeout(bool aCloseIfNeeded)
     // evicted.
     if (mSession)
     {
-        if (mSession->IsSecureSession() && mSession->AsSecureSession()->IsCASESession())
+        // If we timed out _after_ getting an ack for the message, that means
+        // the session is probably fine (since our message and the ack got
+        // through), so don't mark the session defunct if we got an MRP ack.
+        if (!gotMRPAck)
         {
-            mSession->AsSecureSession()->MarkAsDefunct();
+            if (mSession->IsSecureSession() && mSession->AsSecureSession()->IsCASESession())
+            {
+                mSession->AsSecureSession()->MarkAsDefunct();
+            }
+            mSession->DispatchSessionEvent(&SessionDelegate::OnSessionHang);
         }
-        mSession->DispatchSessionEvent(&SessionDelegate::OnSessionHang);
     }
 
     ExchangeDelegate * delegate = GetDelegate();
@@ -602,7 +542,6 @@ CHIP_ERROR ExchangeContext::HandleMessage(uint32_t messageCounter, const Payload
         if (payloadHeader.NeedsAck())
         {
             // An acknowledgment needs to be sent back to the peer for this message on this exchange,
-
             HandleNeedsAck(messageCounter, msgFlags);
         }
     }
@@ -633,7 +572,7 @@ CHIP_ERROR ExchangeContext::HandleMessage(uint32_t messageCounter, const Payload
         return CHIP_NO_ERROR;
     }
 
-    if (IsMessageNotAcked())
+    if (IsWaitingForAck())
     {
         // The only way we can get here is a spec violation on the other side:
         // we sent a message that needs an ack, and the other side responded
@@ -645,17 +584,13 @@ CHIP_ERROR ExchangeContext::HandleMessage(uint32_t messageCounter, const Payload
         return CHIP_ERROR_INCORRECT_STATE;
     }
 
-#if CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
-    DeviceLayer::ChipDeviceEvent event;
-    event.Type                                  = DeviceLayer::DeviceEventType::kChipMsgRxEventHandled;
-    event.RxEventContext.wasReceived            = true;
-    event.RxEventContext.clearsExpectedResponse = IsResponseExpected();
-    CHIP_ERROR status                           = DeviceLayer::PlatformMgr().PostEvent(&event);
-    if (status != CHIP_NO_ERROR)
-    {
-        ChipLogError(DeviceLayer, "Failed to post Message received event %" CHIP_ERROR_FORMAT, status.Format());
-    }
-#endif // CONFIG_DEVICE_LAYER && CHIP_CONFIG_ENABLE_ICD_SERVER
+#if CHIP_CONFIG_ENABLE_ICD_SERVER
+    // message received
+    app::ICDNotifier::GetInstance().BroadcastNetworkActivityNotification();
+#endif // CHIP_CONFIG_ENABLE_ICD_SERVER
+
+    // Set kFlagReceivedAtLeastOneMessage to true since we have received at least one new application level message
+    SetHasReceivedAtLeastOneMessage(true);
 
     if (IsResponseExpected())
     {
@@ -681,10 +616,6 @@ CHIP_ERROR ExchangeContext::HandleMessage(uint32_t messageCounter, const Payload
 
 void ExchangeContext::MessageHandled()
 {
-#if CONFIG_DEVICE_LAYER && CHIP_DEVICE_CONFIG_ENABLE_SED
-    UpdateSEDIntervalMode();
-#endif
-
     if (mFlags.Has(Flags::kFlagClosed) || IsResponseExpected() || IsSendExpected())
     {
         return;

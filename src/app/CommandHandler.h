@@ -170,13 +170,20 @@ public:
      */
     void OnInvokeCommandRequest(Messaging::ExchangeContext * ec, const PayloadHeader & payloadHeader,
                                 System::PacketBufferHandle && payload, bool isTimedInvoke);
-    CHIP_ERROR AddStatus(const ConcreteCommandPath & aCommandPath, const Protocols::InteractionModel::Status aStatus);
 
-    // Same as AddStatus, but logs that the command represented by aCommandPath failed with the given
-    // error status and error message, if aStatus is an error. Errors on AddStatus are just logged
-    // (since the caller likely can only log and not further add a status).
-    void AddStatusAndLogIfFailure(const ConcreteCommandPath & aCommandPath, const Protocols::InteractionModel::Status aStatus,
-                                  const char * aMessage);
+    /**
+     * Adds the given command status and returns any failures in adding statuses (e.g. out
+     * of buffer space) to the caller
+     */
+    CHIP_ERROR FallibleAddStatus(const ConcreteCommandPath & aCommandPath, const Protocols::InteractionModel::Status aStatus,
+                                 const char * context = nullptr);
+
+    /**
+     * Adds a status when the caller is unable to handle any failures. Logging is performed
+     * and failure to register the status is checked with VerifyOrDie.
+     */
+    void AddStatus(const ConcreteCommandPath & aCommandPath, const Protocols::InteractionModel::Status aStatus,
+                   const char * context = nullptr);
 
     CHIP_ERROR AddClusterSpecificSuccess(const ConcreteCommandPath & aCommandPath, ClusterStatus aClusterStatus);
 
@@ -238,13 +245,9 @@ public:
     template <typename CommandData>
     void AddResponse(const ConcreteCommandPath & aRequestCommandPath, const CommandData & aData)
     {
-        if (CHIP_NO_ERROR != AddResponseData(aRequestCommandPath, aData))
+        if (AddResponseData(aRequestCommandPath, aData) != CHIP_NO_ERROR)
         {
-            CHIP_ERROR err = AddStatus(aRequestCommandPath, Protocols::InteractionModel::Status::Failure);
-            if (err != CHIP_NO_ERROR)
-            {
-                ChipLogError(DataManagement, "Failed to encode status: %" CHIP_ERROR_FORMAT, err.Format());
-            }
+            AddStatus(aRequestCommandPath, Protocols::InteractionModel::Status::Failure);
         }
     }
 
@@ -403,6 +406,16 @@ private:
         return FinishCommand(/* aEndDataStruct = */ false);
     }
 
+    /**
+     * Check whether the InvokeRequest we are handling is targeted to a group.
+     */
+    bool IsGroupRequest() { return mGroupRequest; }
+
+    /**
+     * Sets the state flag to keep the information that request we are handling is targeted to a group.
+     */
+    void SetGroupRequest(bool isGroupRequest) { mGroupRequest = isGroupRequest; }
+
     Messaging::ExchangeHolder mExchangeCtx;
     Callback * mpCallback = nullptr;
     InvokeResponseMessage::Builder mInvokeResponseBuilder;
@@ -413,7 +426,8 @@ private:
 
     bool mSentStatusResponse = false;
 
-    State mState = State::Idle;
+    State mState       = State::Idle;
+    bool mGroupRequest = false;
     chip::System::PacketBufferTLVWriter mCommandMessageWriter;
     TLV::TLVWriter mBackupWriter;
     bool mBufferAllocated = false;

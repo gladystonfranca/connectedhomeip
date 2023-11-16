@@ -47,12 +47,14 @@ test_params = {
 
 def main():
     if len(sys.argv) != 2:
-        print("Error: Python test id should be provided as the only parameter.")
-        sys.exit(1)
+        raise Exception("Python test id should be provided as the only parameter.")
 
     test_name = sys.argv[1]
 
-    config = test_params[test_name]
+    config = test_params.get(test_name)
+
+    if config is None:
+        raise ValueError(f"Not a valid test id: {test_name}")
 
     module = importlib.import_module(test_name)
     TestClassReference = getattr(module, test_name)
@@ -67,4 +69,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
